@@ -24,7 +24,7 @@ class TrendEngine:
         tavily_client: AsyncTavilyClient, 
         llm_client: genai.Client, 
         db_client: AsyncClient,
-        model_name: str = "gemini-3.1-pro-preview" 
+        model_name: str = "gemini-3.0-flash" 
     ) -> None:
         """
         Dependency Injection ensures the engine doesn't manage its own API connections.
