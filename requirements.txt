@@ -1,11 +1,9 @@
 fastapi
 uvicorn
 python-telegram-bot
+google-genai
+tavily-python
 supabase
 pydantic
-feedparser
-trafilatura
-fake-useragent
-pandas
+pyyaml
 httpx
-lxml_html_clean

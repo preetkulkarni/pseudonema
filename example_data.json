@@ -1,0 +1,14 @@
+{
+    "categories": [
+        {
+            "category_name": "category_name",
+            "subcategories": [
+                {
+                    "subcategory_name": "subcategory_name",
+                    "topics": ["topic1", "topic2", "topic3"],
+                    "urls": ["url1", "url2", "url3"]
+                }
+            ]
+        }
+    ]
+}
