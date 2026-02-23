@@ -77,6 +77,8 @@ async def trigger_trend_generation(message: Any) -> None:
     status_msg = await message.reply_text("🔥 *Scanning the web for live tech trends...*", parse_mode="Markdown")
 
     try:
+        # Initialize config manager
+        _config_mgr.initialize()
         # 1. Get targets dynamically from ConfigManager
         num_trends, category, subcat, topics, urls = _config_mgr.get_trends()
         
