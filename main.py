@@ -78,7 +78,7 @@ async def trigger_trend_generation(message: Any) -> None:
 
     try:
         # Initialize config manager
-        _config_mgr.initialize()
+        await _config_mgr.initialize()
         # 1. Get targets dynamically from ConfigManager
         num_trends, category, subcat, topics, urls = _config_mgr.get_trends()
         
