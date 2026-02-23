@@ -78,11 +78,11 @@ async def trigger_trend_generation(message: Any) -> None:
 
     try:
         # 1. Get targets dynamically from ConfigManager
-        category, subcat, topics, urls = _config_mgr.get_scout_target()
+        num_trends, category, subcat, topics, urls = _config_mgr.get_trends()
         
         # 2. Run the TrendEngine
         trends: List[Trend] = await _trend_engine.fetch_and_generate_trends(
-            num_trends=_config_mgr.num_topics,
+            num_trends=num_trends,
             category=category,
             subcategory=subcat,
             topics=topics,
