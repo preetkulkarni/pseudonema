@@ -2,7 +2,7 @@ import os
 import html
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional, cast, AsyncGenerator, Any
+from typing import List, Optional, cast, AsyncGenerator, Any, Dict
 
 from fastapi import FastAPI, Request, Response, Header
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -52,25 +52,51 @@ _ptb_app: Optional[Application] = None
 _config_mgr: Optional[ConfigManager] = None
 _trend_engine: Optional[TrendEngine] = None
 
-# --- Helper Functions ---
+# Cache the latest trends in memory 
+_latest_trends: Dict[str, Trend] = {} 
 
-def build_dynamic_keyboard(trend_names: List[str]) -> InlineKeyboardMarkup:
-    """Creates an interactive inline keyboard from dynamically generated trends."""
+# --- UI / Keyboard Generators ---
+
+def build_trends_list_keyboard(trends: List[Trend]) -> InlineKeyboardMarkup:
+    """Creates the main menu keyboard listing all generated trends using their UUIDs."""
     keyboard: List[List[InlineKeyboardButton]] = []
     
-    for i in range(0, len(trend_names), 2):
-        row = []
-        for topic in trend_names[i:i+2]:
-            # Telegram callback_data is limited to 64 bytes. Truncate if necessary.
-            safe_topic = topic[:45] 
-            row.append(InlineKeyboardButton(text=topic, callback_data=f"scout_{safe_topic}"))
-        keyboard.append(row)
+    # Create rows of 1 button each for better readability of trend names
+    for t in trends:
+        if not t.id: 
+            continue
+        # Truncate button text slightly if it's too long, but callback_data gets UUID
+        btn_text = t.name[:40] + "..." if len(t.name) > 40 else t.name
+        keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"view_{t.id}")])
         
-    keyboard.append([InlineKeyboardButton("🔄 Generate New Trends", callback_data="refresh_trending")])
+    keyboard.append([InlineKeyboardButton("🔄 Regenerate Trends", callback_data="refresh_trending")])
     return InlineKeyboardMarkup(keyboard)
+
+def build_trend_detail_keyboard(trend_id: str) -> InlineKeyboardMarkup:
+    """Creates the action buttons when viewing a specific trend."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🕵️ Scout This Topic", callback_data=f"scout_{trend_id}")],
+        [InlineKeyboardButton("🔙 Back to Trends List", callback_data="back_to_list")]
+    ])
+
+# --- Core Logic Functions ---
+
+def format_trends_list_message() -> str:
+    """Formats the top-level list view message."""
+    if not _config_mgr:
+        return "System not initialized."
+    
+    # We grab the current target settings from the config manager safely
+    category = getattr(_config_mgr, 'active_category', 'Unknown')
+    return (
+        f"🔥 <b>Live Trends Discovered</b>\n\n"
+        f"<b>Category:</b> {html.escape(category).title()}\n\n"
+        f"👇 Select a trend below to view its full context:"
+    )
 
 async def trigger_trend_generation(message: Any) -> None:
     """Executes the trend engine and updates the UI."""
+    global _latest_trends
     if not _config_mgr or not _trend_engine:
         await message.reply_text("System not fully initialized.")
         return
@@ -78,12 +104,9 @@ async def trigger_trend_generation(message: Any) -> None:
     status_msg = await message.reply_text("🔥 <b>Scanning the web for live tech trends...</b>", parse_mode="HTML")
 
     try:
-        # Initialize config manager
         await _config_mgr.initialize()
-        # 1. Get targets dynamically from ConfigManager
         num_trends, category, subcat, topics, urls = _config_mgr.get_trends()
         
-        # 2. Run the TrendEngine
         trends: List[Trend] = await _trend_engine.fetch_and_generate_trends(
             num_trends=num_trends,
             category=category,
@@ -93,21 +116,11 @@ async def trigger_trend_generation(message: Any) -> None:
         )
 
         if trends:
-            trend_names = [t.name for t in trends]
-            keyboard = build_dynamic_keyboard(trend_names)
+            # Update global memory cache mapping UUIDs to Trend objects
+            _latest_trends = {str(t.id): t for t in trends if t.id}
             
-            # Escape and format dynamic strings to prevent HTML parsing errors
-            safe_category = html.escape(category).title()
-            safe_subcat = html.escape(subcat).replace("_", " ").title()
-            topics_str = ", ".join(topics) if topics else "general news"
-            safe_topics = html.escape(topics_str)
-            
-            text = (
-                f"🔥 <b>Live Trends Discovered</b>\n\n"
-                f"<b>Category:</b> {safe_category} &gt; {safe_subcat}\n"
-                f"<b>Focus:</b> {safe_topics}\n\n"
-                f"👇 Select a trend below:"
-            )
+            keyboard = build_trends_list_keyboard(trends)
+            text = format_trends_list_message()
             
             await status_msg.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         else:
@@ -117,13 +130,13 @@ async def trigger_trend_generation(message: Any) -> None:
         logger.error(f"Trend generation failed: {e}", exc_info=True)
         await status_msg.edit_text(f"❌ <b>Error generating trends</b>: {html.escape(str(e))}", parse_mode="HTML")
 
+
 # --- Command Handlers ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
 
-    # Safely escape the user's name just in case it contains < or >
     safe_user_name = html.escape(update.effective_user.first_name)
     welcome_text = (
         f"👋 <b>Hello, {safe_user_name}!</b> \n\n"
@@ -161,13 +174,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not data:
         return
 
-    if data.startswith("scout_"):
-        topic = data.replace("scout_", "")
-        # Placeholder alert since scouting is disabled
-        await query.answer(f"Pipeline paused at Trend Engine.\n\nSelected: {topic}", show_alert=True)
-    elif data == "refresh_trending":
-        await query.answer() # Acknowledge the click
-        await trigger_trend_generation(update.effective_message)
+    # --- Routing the UI clicks ---
+    try:
+        if data.startswith("view_"):
+            # DETAIL VIEW
+            trend_id = data.replace("view_", "")
+            trend = _latest_trends.get(trend_id)
+            
+            if not trend:
+                await query.answer("⚠️ Trend expired from memory. Please regenerate.", show_alert=True)
+                return
+                
+            await query.answer() # Ack the click
+            
+            detail_text = (
+                f"📊 <b>Trend Details</b>\n\n"
+                f"<b>Name:</b> {html.escape(trend.name)}\n\n"
+                f"<b>Context:</b>\n<i>{html.escape(trend.context)}</i>"
+            )
+            keyboard = build_trend_detail_keyboard(trend_id)
+            await query.edit_message_text(text=detail_text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data == "back_to_list":
+            # RETURN TO LIST VIEW
+            if not _latest_trends:
+                await query.answer("⚠️ Session expired. Please regenerate.", show_alert=True)
+                return
+                
+            await query.answer()
+            trends_list = list(_latest_trends.values())
+            keyboard = build_trends_list_keyboard(trends_list)
+            text = format_trends_list_message()
+            await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data.startswith("scout_"):
+            # INITIATE SCOUTING
+            trend_id = data.replace("scout_", "")
+            trend = _latest_trends.get(trend_id)
+            
+            if not trend:
+                await query.answer("⚠️ Trend expired from memory. Please regenerate.", show_alert=True)
+                return
+                
+            await query.answer()
+            
+            scouting_text = (
+                f"🕵️ <b>Scouting Initiated!</b>\n\n"
+                f"<b>Target:</b> {html.escape(trend.name)}\n"
+                f"<b>Trend ID:</b> <code>{trend_id}</code>\n\n"
+                f"<i>(Pipeline paused here: Ready for Phase 3 ScoutEngine...)</i>"
+            )
+            # Remove buttons so the user can't click "Scout" twice
+            await query.edit_message_text(text=scouting_text, parse_mode="HTML")
+
+        elif data == "refresh_trending":
+            # REGENERATE
+            await query.answer()
+            await trigger_trend_generation(update.effective_message)
+            
+    except Exception as e:
+        logger.error(f"Button handler error: {e}", exc_info=True)
+        await query.answer("❌ An error occurred processing your request.", show_alert=True)
+
 
 # --- Application Lifecycle ---
 
